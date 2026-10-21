@@ -26,6 +26,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
 
     steps:
       - name: Depoyu al
@@ -36,6 +40,18 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Android release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret eksik"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/molly-release.jks"
+          test -s "$RUNNER_TEMP/molly-release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/molly-release.jks" >> "$GITHUB_ENV"
 
       - name: Gradle önbelleği
         uses: actions/cache@v4
