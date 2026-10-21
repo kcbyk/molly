@@ -1,0 +1,132 @@
+name: APK Üret
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: 'Sunucu adresi (boş bırakılırsa depo değişkeni API_BASE kullanılır)'
+        required: false
+        default: ''
+      split:
+        description: 'ABI başına ayrı APK da üret (daha küçük indirme)'
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Depoyu al
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle önbelleği
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Sürüm bilgisi
+        id: ver
+        run: |
+          VERSION=$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//' | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "name=Molly-${VERSION%%+*}" >> "$GITHUB_OUTPUT"
+
+      - name: Sunucu adresi
+        id: api
+        env:
+          INPUT_BASE: ${{ inputs.api_base }}
+          VARS_BASE: ${{ vars.API_BASE }}
+        run: |
+          BASE="$INPUT_BASE"
+          if [ -z "$BASE" ]; then BASE="$VARS_BASE"; fi
+          if [ -z "$BASE" ]; then
+            echo "::warning::API_BASE boş — uygulama localhost:3000'e bakacak. Depo Ayarları > Variables > API_BASE ekleyin."
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "API_BASE: ${BASE:-<boş>}"
+
+      - name: Bağımlılıklar
+        run: flutter pub get
+
+      - name: Analiz (bilgilendirici)
+        continue-on-error: true
+        run: flutter analyze
+
+      - name: Testler (bilgilendirici)
+        continue-on-error: true
+        run: flutter test
+
+      - name: Evrensel APK
+        run: |
+          flutter build apk --release \
+            --dart-define=API_BASE="${{ steps.api.outputs.base }}" \
+            --build-name="${VERSION_NAME:-1.0.0}"
+        env:
+          VERSION_NAME: ${{ steps.ver.outputs.version }}
+
+      - name: ABI başına APK
+        if: ${{ inputs.split != false }}
+        run: |
+          flutter build apk --release --split-per-abi \
+            --dart-define=API_BASE="${{ steps.api.outputs.base }}"
+
+      - name: APK'ları topla
+        run: |
+          mkdir -p dist
+          NAME="${{ steps.ver.outputs.name }}"
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/${NAME}-universal.apk"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            src="build/app/outputs/flutter-apk/app-${abi}-release.apk"
+            if [ -f "$src" ]; then cp "$src" "dist/${NAME}-${abi}.apk"; fi
+          done
+          ls -lh dist
+
+      - name: Artifact olarak yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: molly-apk
+          path: dist/*.apk
+          retention-days: 30
+
+      - name: Release oluştur (yalnızca etiketle)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Molly ${{ steps.ver.outputs.version }}
+          files: dist/*.apk
+          generate_release_notes: true
+          body: |
+            Molly APK — sunucu adresi: `${{ steps.api.outputs.base }}`
+
+            - `universal`: her cihazda çalışır (en büyük dosya)
+            - `arm64-v8a`: modern telefonlar (önerilir)
+            - `armeabi-v7a`: eski 32-bit telefonlar
+            - `x86_64`: emülatör

@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:palette_generator/palette_generator.dart';
 import '../models/song.dart';
+import '../services/palette_cache.dart';
 import '../theme/app_theme.dart';
 import 'app_icons.dart';
 import 'spotify_canvas_video.dart';
@@ -12,6 +12,7 @@ class NowPlayingScreen extends StatefulWidget {
   final Song nextSong;
   final String contextTitle;
   final bool isPlaying;
+  final bool isActive;
   final int currentPositionSeconds;
   final bool isLiked;
   final bool isShuffle;
@@ -35,6 +36,7 @@ class NowPlayingScreen extends StatefulWidget {
     required this.nextSong,
     required this.contextTitle,
     required this.isPlaying,
+    this.isActive = true,
     required this.currentPositionSeconds,
     required this.isLiked,
     required this.isShuffle,
@@ -108,49 +110,30 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     if (url == null || url.isEmpty || url == _lastPaletteUrl) return;
     _lastPaletteUrl = url;
 
-    // In unit/widget tests without real network, skip PaletteGenerator
+    // In unit/widget tests without real network, skip palette extraction
     if (WidgetsBinding.instance is! WidgetsFlutterBinding) {
-      if (mounted) {
-        setState(() {
-          _bgTop = _darken(song.color1, 0.55);
-          _bgBottom = const Color(0xFF0A0A0D);
-        });
-      }
+      _applyPalette(song.color1, null);
       return;
     }
 
-    try {
-      final imageProvider = NetworkImage(url);
-      final palette = await PaletteGenerator.fromImageProvider(
-        imageProvider,
-        size: const Size(100, 100), // küçük boyut = hızlı analiz
-        maximumColorCount: 8,
-      );
-
-      if (!mounted) return;
-
-      // Dominant veya vibrant rengi seç, karanlık versiyonunu kullan
-      final dominant =
-          palette.dominantColor?.color ?? palette.vibrantColor?.color;
-      final secondary =
-          palette.mutedColor?.color ?? palette.darkVibrantColor?.color;
-
-      if (dominant != null) {
-        setState(() {
-          // Rengi koyulaştır — Spotify gibi koyu ama renkli
-          _bgTop = _darken(dominant, 0.55);
-          _bgBottom = _darken(secondary ?? dominant, 0.80);
-        });
-      }
-    } catch (_) {
-      // Palette çıkarma başarısız → song.color1/color2'yi kullan
-      if (mounted) {
-        setState(() {
-          _bgTop = _darken(song.color1, 0.55);
-          _bgBottom = const Color(0xFF0A0A0D);
-        });
-      }
+    // Ana ekran aynı kapağı zaten analiz ettiyse anında sonuç gelir.
+    final cached = PaletteCache.peek(url);
+    if (cached?.dominant != null) {
+      _applyPalette(cached!.dominant!, cached.muted);
+      return;
     }
+
+    final palette = await PaletteCache.load(url);
+    if (!mounted) return;
+    _applyPalette(palette?.dominant ?? song.color1, palette?.muted);
+  }
+
+  void _applyPalette(Color dominant, Color? secondary) {
+    if (!mounted) return;
+    setState(() {
+      _bgTop = _darken(dominant, 0.55);
+      _bgBottom = _darken(secondary ?? dominant, 0.80);
+    });
   }
 
   /// Rengi belirtilen miktarda koyulaştırır (0.0 = değişmez, 1.0 = siyah)
@@ -191,7 +174,9 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
             Positioned.fill(
               child: SpotifyCanvasVideo(
                 videoUrl: widget.song.canvasUrl!,
+                coverUrl: widget.song.coverUrl,
                 borderRadius: 0,
+                isActive: widget.isActive,
               ),
             )
           else
@@ -320,8 +305,19 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                     ),
 
                     // MIDDLE — Canvas varsa tıklanabilir boş alan; yoksa büyük kapak fotoğrafı
+                    // Sağa/sola kaydırma → önceki/sonraki şarkı
                     Expanded(
-                      child: _hasCanvas
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onHorizontalDragEnd: (details) {
+                          final velocity = details.primaryVelocity ?? 0;
+                          if (velocity < -220) {
+                            widget.onNext();
+                          } else if (velocity > 220) {
+                            widget.onPrevious();
+                          }
+                        },
+                        child: _hasCanvas
                           ? GestureDetector(
                               onTap: widget.onTogglePlay,
                               behavior: HitTestBehavior.translucent,
@@ -361,7 +357,8 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                                           ? Image.network(
                                               widget.song.coverUrl!,
                                               fit: BoxFit.cover,
-                                              filterQuality: FilterQuality.high,
+                                              cacheWidth: (coverSize * 2).round(),
+                                              filterQuality: FilterQuality.medium,
                                               errorBuilder: (c, e, s) =>
                                                   _fallbackCover(coverSize),
                                             )
@@ -371,6 +368,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                                 ),
                               ),
                             ),
+                      ),
                     ),
 
                     // BOTTOM CONTROLS PANEL
@@ -407,6 +405,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                                         ? Image.network(
                                             widget.song.coverUrl!,
                                             fit: BoxFit.cover,
+                                            cacheWidth: 160,
                                             errorBuilder: (c, e, s) =>
                                                 Container(
                                               decoration: BoxDecoration(

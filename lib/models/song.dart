@@ -72,6 +72,14 @@ class Song {
     final cover = json['coverUrl']?.toString();
     final durSec = (json['durationSeconds'] is num) ? (json['durationSeconds'] as num).toInt() : 180;
 
+    // iTunes kaynaklı sonuçlarda Spotify track id yoktur; canvas sorgusu
+    // "artist title" ile yapılabilsin diye null bırakıyoruz.
+    final source = json['source']?.toString();
+    final rawSpotifyId = json['spotifyTrackId']?.toString();
+    final spotifyId = (rawSpotifyId != null && rawSpotifyId.isNotEmpty)
+        ? rawSpotifyId
+        : ((source == null || source == 'spotify') && id.isNotEmpty ? id : null);
+
     final hash = id.hashCode.abs();
     final palette = _gradientPalettes[hash % _gradientPalettes.length];
 
@@ -88,7 +96,7 @@ class Song {
       color1: palette[0],
       color2: palette[1],
       coverUrl: cover,
-      spotifyTrackId: id,
+      spotifyTrackId: spotifyId,
     );
   }
 
