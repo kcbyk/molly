@@ -63,7 +63,9 @@ Gerçek cihazda bilgisayarın LAN IP'sini kullan (`http://192.168.x.x:3000`).
 
 ```bash
 # Web uygulaması (API ayrı bir adreste)
-flutter build web --dart-define=API_BASE=https://molly-api.onrender.com
+# SUNUCU-ADRESIN yerine kendi dağıtım adresini yaz (ör. Render'da
+# https://molly-api-xxxx.onrender.com). Repodaki adres örnek/yer tutucudur.
+flutter build web --dart-define=API_BASE=https://SUNUCU-ADRESIN.onrender.com
 
 # ya da tek servis: derleme sunucudan servis edilir
 flutter build web && cd server && npm start

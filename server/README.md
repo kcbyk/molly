@@ -96,11 +96,20 @@ cd server && npm test     # 7 birim testi
 - **Start command:** `npm start`
 - Env: en az `SPOTIFY_SP_DC` + `SPOTIFY_CLIENT_ID`/`SECRET` (önerilir)
 
-Flutter web'i ayrı bir statik hostingde yayınlıyorsan derlerken API adresini ver:
+Flutter web'i ayrı bir statik hostingde yayınlıyorsan derlerken API adresini ver
+(`SUNUCU-ADRESIN` yer tutucudur; kendi dağıtım adresini yaz):
 
 ```bash
-flutter build web --dart-define=API_BASE=https://molly-api.onrender.com
+flutter build web --dart-define=API_BASE=https://SUNUCU-ADRESIN.onrender.com
 ```
+
+Depo kökündeki `render.yaml` Render Blueprint'idir: Render panelinde
+**New → Blueprint** deyip depoyu seçmek yeterli. `rootDir: server`,
+`start: npm start`, sağlık kontrolü `/api/health`.
+
+> Ücretsiz Render planı 15 dk trafik olmayınca uyur; sonraki ilk istek
+> 30-60 sn sürebilir. "Kuş gibi hafif" hedefi için ya ücretli plan ya da
+> Railway/Fly.io/VPS gibi uyumayan bir yer önerilir.
 
 ### Tek servis (API + web)
 

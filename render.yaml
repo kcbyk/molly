@@ -1,0 +1,22 @@
+# Render Blueprint — "New > Blueprint" ile bu depoyu seç, gerisi otomatik.
+# Ücretsiz plan 15 dk boşta kalınca uyur; ilk istek 30-60 sn sürebilir.
+services:
+  - type: web
+    name: molly-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Değerleri Render panelinden gir (repoya asla yazma).
+      - key: SPOTIFY_SP_DC
+        sync: false
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: RAPIDAPI_KEYS
+        sync: false
