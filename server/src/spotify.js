@@ -11,9 +11,13 @@ const SECRETS_URL =
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET || '';
 const SP_DC = process.env.SPOTIFY_SP_DC || '';
+const REFRESH_TOKEN = process.env.SPOTIFY_REFRESH_TOKEN || '';
 
 export const spotifyConfigured = Boolean(CLIENT_ID && CLIENT_SECRET);
 export const canvasCookieConfigured = Boolean(SP_DC);
+export const spotifyUserConfigured = Boolean(
+  CLIENT_ID && CLIENT_SECRET && REFRESH_TOKEN,
+);
 
 // ──────────────────────────────────────────────────────────────
 //  Resmi Web API (client credentials) — arama + 640px kapak
@@ -50,6 +54,53 @@ async function getClientToken() {
   }
 }
 
+/**
+ * Refresh token varsa kullanıcı adına access token alır.
+ * Client credentials'a göre avantajı: bazı uç noktalar (canvas/Pathfinder)
+ * yalnızca kullanıcı tokeniyle yanıt verir. Yoksa null döner.
+ */
+async function getUserToken() {
+  if (!spotifyUserConfigured) return null;
+  const cached = cacheGet('spotify:user-token');
+  if (cached) return cached;
+  const blocked = cacheGet('spotify:user-token-failed');
+  if (blocked) return null;
+
+  const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
+  try {
+    const res = await request(SPOTIFY_ACCOUNTS, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${basic}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(REFRESH_TOKEN)}`,
+      timeout: 9000,
+    });
+    if (!res.ok) {
+      console.warn(`[spotify] refresh token ${res.status}`);
+      // 400/401 = token iptal/yanlış; 5 dk boyunca tekrar denemeyelim.
+      if (res.status === 400 || res.status === 401) {
+        cacheSet('spotify:user-token-failed', true, 5 * 60 * 1000);
+      }
+      return null;
+    }
+    const data = await res.json();
+    if (!data.access_token) return null;
+    const ttl = Math.max(60_000, (data.expires_in || 3600) * 1000 - 120_000);
+    cacheSet('spotify:user-token', data.access_token, ttl);
+    return data.access_token;
+  } catch (error) {
+    console.warn('[spotify] refresh token hatası:', error.message);
+    return null;
+  }
+}
+
+/** Resmi Web API: kullanıcı tokeni varsa o, yoksa client credentials. */
+async function getSpotifyToken() {
+  return (await getUserToken()) || (await getClientToken());
+}
+
 function normalizeTrack(track, { withSpotifyId = true } = {}) {
   if (!track) return null;
   const images = track.album?.images || [];
@@ -68,7 +119,7 @@ function normalizeTrack(track, { withSpotifyId = true } = {}) {
 
 export async function spotifySearch(query, limit = 15) {
   if (!spotifyConfigured) return null;
-  const token = await getClientToken();
+  const token = await getSpotifyToken();
   if (!token) return null;
 
   const key = `spotify:search:${query.toLowerCase()}:${limit}`;
@@ -96,7 +147,7 @@ export async function spotifyTrack(trackId) {
   const cached = cacheGet(key);
   if (cached) return cached;
 
-  const token = await getClientToken();
+  const token = await getSpotifyToken();
   if (!token) return null;
   try {
     const data = await getJson(`${SPOTIFY_API}/tracks/${encodeURIComponent(trackId)}?market=TR`, {
@@ -304,6 +355,46 @@ async function scrapeCanvas(trackId) {
   }
 }
 
+/**
+ * Resmi kullanıcı tokeniyle canvas denemesi.
+ * Internal uç nokta gibi her zaman çalışmaz; ilk başarısızlıkta 15 dk susar.
+ */
+async function canvasViaOfficialToken(trackId) {
+  if (!spotifyUserConfigured) return null;
+  if (cacheGet('canvas:official-blocked')) return null;
+
+  const token = await getUserToken();
+  if (!token) return null;
+
+  try {
+    const res = await request(
+      'https://spclient.wg.spotify.com/canvaz-cache/v0/canvases?market=from_token',
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/protobuf',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'App-Platform': 'WebPlayer',
+          Authorization: `Bearer ${token}`,
+        },
+        body: encodeCanvasRequest(`spotify:track:${trackId}`),
+        timeout: 8000,
+      },
+    );
+    if (!res.ok) {
+      cacheSet('canvas:official-blocked', true, 15 * 60 * 1000);
+      return null;
+    }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (!buffer.length) return null;
+    const parsed = decodeCanvasResponse(buffer);
+    return parsed.canvasesList.length ? parsed.canvasesList : null;
+  } catch {
+    cacheSet('canvas:official-blocked', true, 15 * 60 * 1000);
+    return null;
+  }
+}
+
 /** Track için canvas listesi. SP_DC yoksa/başarısızsa null döner. */
 export async function spotifyCanvas(trackId) {
   if (!trackId) return null;
@@ -315,6 +406,12 @@ export async function spotifyCanvas(trackId) {
   if (internal) {
     cacheSet(key, internal, 6 * 60 * 60 * 1000);
     return internal;
+  }
+
+  const official = await canvasViaOfficialToken(trackId);
+  if (official) {
+    cacheSet(key, official, 6 * 60 * 60 * 1000);
+    return official;
   }
 
   const scraped = await scrapeCanvas(trackId);

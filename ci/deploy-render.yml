@@ -1,0 +1,44 @@
+name: Render'a Dağıt
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'render.yaml'
+      - 'ci/deploy-render.yml'
+
+concurrency:
+  group: render-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Render servisini kur / güncelle
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          SPOTIFY_SP_DC: ${{ secrets.SPOTIFY_SP_DC }}
+          RAPIDAPI_KEYS: ${{ secrets.RAPIDAPI_KEYS }}
+          MP3_API_KEY: ${{ secrets.MP3_API_KEY }}
+          DEPLOY_BRANCH: ${{ vars.DEPLOY_BRANCH || 'main' }}
+          RENDER_PLAN: ${{ vars.RENDER_PLAN || 'free' }}
+          RENDER_REGION: ${{ vars.RENDER_REGION || 'frankfurt' }}
+        run: node .github/scripts/render-deploy.mjs
+
+      - name: Adresi özetle
+        if: always()
+        run: echo "Ayrıntılar yukarıdaki adımda." >> $GITHUB_STEP_SUMMARY

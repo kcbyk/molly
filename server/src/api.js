@@ -2,7 +2,11 @@ import { resolveAudio } from './audio.js';
 import { resolveCanvas, resolveCanvasBatch } from './canvas.js';
 import { cacheStats } from './cache.js';
 import { searchSongs } from './search.js';
-import { canvasCookieConfigured, spotifyConfigured } from './spotify.js';
+import {
+  canvasCookieConfigured,
+  spotifyConfigured,
+  spotifyUserConfigured,
+} from './spotify.js';
 
 const STARTED_AT = Date.now();
 const VERSION = '1.0.0';
@@ -11,6 +15,7 @@ const MAX_BODY = 64 * 1024;
 export function featureFlags() {
   return {
     spotifySearch: spotifyConfigured,
+    spotifyUserToken: spotifyUserConfigured,
     canvas: canvasCookieConfigured ? 'full' : 'best-effort',
     itunes: true,
     audio: true,

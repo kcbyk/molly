@@ -70,6 +70,7 @@ cd server && npm test     # 7 birim testi
 | --- | --- |
 | `PORT`, `HOST` | Varsayılan `3000`, `0.0.0.0` |
 | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` | Resmi arama + 640px kapak + canvas için gerçek track id |
+| `SPOTIFY_REFRESH_TOKEN` | Opsiyonel: kullanıcı adına access token (canvas için ek şans) |
 | `SPOTIFY_SP_DC` | **Canvas'ın tüm şarkılarda çalışması için** gerekli Spotify çerezi |
 | `RAPIDAPI_KEYS` | Virgülle ayrılmış anahtarlar (boşsa uygulamadaki 3 anahtar) |
 | `RAPIDAPI_HOST` | Varsayılan `youtube-mp36.p.rapidapi.com` |

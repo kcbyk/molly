@@ -74,6 +74,21 @@ flutter build web && cd server && npm start
 `API_BASE` verilmezse web'de uygulamanın açıldığı origin, native'de
 `http://localhost:3000` kullanılır.
 
+## APK üretimi
+
+Depo içinde hazır iki yol var:
+
+**A) GitHub Actions (önerilen)** — `ci/` klasöründeki iki dosyayı
+`.github/workflows/` altına taşı, sırları ekle (bkz. `ci/README.md`), sonra
+Actions → **APK Üret** → Run workflow. `molly-apk` artifact'ından
+`Molly-1.0.0-arm64-v8a.apk` indir.
+
+**B) Kendi bilgisayarında**
+
+```bash
+./scripts/build_apk.sh https://sunucu-adresin.onrender.com
+```
+
 ## Neden sunucu?
 
 Tarayıcıdan Spotify'ın canvas/kapak uçlarına doğrudan gitmek CORS ve gizli
