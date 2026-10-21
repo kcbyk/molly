@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 class ApiConfig {
   /// RapidAPI Keys provided by user for youtube-mp36
   static final List<String> apiKeys = [
@@ -36,4 +38,41 @@ class ApiConfig {
   /// mp3-apisi.onrender.com personal download API key
   static const String mp3ApiKey = 'sk-24354e1074e69575b4f39796';
   static const String mp3ApiBase = 'https://mp3-apisi.onrender.com';
+
+  // ─────────────────────────────────────────────────────────────
+  //  Molly sunucusu (server/ klasörü)
+  // ─────────────────────────────────────────────────────────────
+  //
+  // Öncelik sırası:
+  //   1. --dart-define=API_BASE=https://molly-api.onrender.com
+  //   2. Web: uygulamanın servis edildiği origin (sunucu Flutter'ı da
+  //      servis ediyorsa hazır gelir) → yedek olarak localhost:3000
+  //   3. Native: http://localhost:3000  (Android emülatör: 10.0.2.2)
+  //
+  // Sunucu bulunamazsa uygulama eski yedeklerle (Invidious, RapidAPI,
+  // mp3-apisi) aynen çalışmaya devam eder.
+
+  static const String apiBaseOverride = String.fromEnvironment('API_BASE');
+  static const String devFallbackBase = 'http://localhost:3000';
+
+  static String get apiBase {
+    final override = apiBaseOverride.trim();
+    if (override.isNotEmpty) return normalizeBase(override);
+    if (kIsWeb) {
+      try {
+        final origin = Uri.base.origin;
+        if (origin.isNotEmpty && origin != 'null') return normalizeBase(origin);
+      } catch (_) {}
+      return devFallbackBase;
+    }
+    return devFallbackBase;
+  }
+
+  static String normalizeBase(String value) {
+    var base = value.trim();
+    while (base.endsWith('/')) {
+      base = base.substring(0, base.length - 1);
+    }
+    return base;
+  }
 }

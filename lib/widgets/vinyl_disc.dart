@@ -39,7 +39,9 @@ class VinylDisc extends StatelessWidget {
                 width: size,
                 height: size,
                 fit: BoxFit.cover,
-                filterQuality: FilterQuality.high,
+                // Küçük daire için tam boy kapak çözmeye gerek yok (bellek/CPU tasarrufu)
+                cacheWidth: (size * 2).round(),
+                filterQuality: FilterQuality.medium,
                 errorBuilder: (context, error, stackTrace) => Container(
                   width: size,
                   height: size,

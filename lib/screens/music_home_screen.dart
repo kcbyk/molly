@@ -3,10 +3,10 @@ import 'dart:math' as math;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:palette_generator/palette_generator.dart';
 import '../models/song.dart';
 import '../services/audio_player_service.dart';
 import '../services/music_api_service.dart';
+import '../services/palette_cache.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/app_toast.dart';
@@ -41,11 +41,21 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
   double _scrollRatio = 0.0;
 
   bool _isPlayerOpen = false;
+  // Now Playing alt ağacı yalnızca açıkken/animasyon sırasında kurulur.
+  bool _playerLayerVisible = false;
   bool _isShuffle = false;
   bool _isRepeat = false;
 
+  static const List<AppTab> _tabs = [
+    AppTab.discover,
+    AppTab.library,
+    AppTab.liked,
+  ];
+  late final PageController _pageController;
+
   Timer? _playbackTimer;
   Timer? _toastTimer;
+  Timer? _playerHideTimer;
   String _toastMessage = '';
 
   late AnimationController _spinController;
@@ -67,46 +77,36 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
 
     // Unit test check
     if (WidgetsBinding.instance is! WidgetsFlutterBinding) {
-      if (mounted) {
-        final pColor = Color.lerp(song.color1, const Color(0xFF101016), 0.70)!;
-        final nColor = Color.lerp(pColor, const Color(0xFF06060A), 0.60)!;
-        setState(() {
-          _smartPlayerColor = pColor;
-          _smartDarkNavColor = nColor;
-        });
-      }
+      _applySmartColors(song, song.color1);
       return;
     }
 
-    try {
-      final palette = await PaletteGenerator.fromImageProvider(
-        NetworkImage(url),
-        size: const Size(80, 80),
-        maximumColorCount: 6,
-      );
-      if (!mounted) return;
-      final dominant = palette.dominantColor?.color ?? palette.vibrantColor?.color ?? song.color1;
-
-      // Oynatıcı rengi: Kapaktaki ana renkten türetilen zengin koyu ton
-      final pColor = Color.lerp(dominant, const Color(0xFF101016), 0.70)!;
-
-      // Alt bar rengi: Oynatıcıyla birebir AYNI rengin daha koyu ve derin tonu
-      final nColor = Color.lerp(pColor, const Color(0xFF06060A), 0.60)!;
-
-      setState(() {
-        _smartPlayerColor = pColor;
-        _smartDarkNavColor = nColor;
-      });
-    } catch (_) {
-      if (mounted) {
-        final pColor = Color.lerp(song.color1, const Color(0xFF101016), 0.70)!;
-        final nColor = Color.lerp(pColor, const Color(0xFF06060A), 0.60)!;
-        setState(() {
-          _smartPlayerColor = pColor;
-          _smartDarkNavColor = nColor;
-        });
-      }
+    // Now Playing aynı kapağı analiz ettiyse cache'ten anında gelir.
+    final cached = PaletteCache.peek(url);
+    if (cached?.dominant != null) {
+      _applySmartColors(song, cached!.dominant);
+      return;
     }
+
+    final palette = await PaletteCache.load(url);
+    if (!mounted) return;
+    _applySmartColors(song, palette?.dominant ?? song.color1);
+  }
+
+  void _applySmartColors(Song song, Color? dominantColor) {
+    if (!mounted) return;
+    final dominant = dominantColor ?? song.color1;
+
+    // Oynatıcı rengi: Kapaktaki ana renkten türetilen zengin koyu ton
+    final pColor = Color.lerp(dominant, const Color(0xFF101016), 0.70)!;
+
+    // Alt bar rengi: Oynatıcıyla birebir AYNI rengin daha koyu ve derin tonu
+    final nColor = Color.lerp(pColor, const Color(0xFF06060A), 0.60)!;
+
+    setState(() {
+      _smartPlayerColor = pColor;
+      _smartDarkNavColor = nColor;
+    });
   }
 
   @override
@@ -116,6 +116,7 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
       vsync: this,
       duration: const Duration(seconds: 8),
     );
+    _pageController = PageController(initialPage: _tabs.indexOf(_currentTab));
 
     for (final s in Song.initialSongs) {
       _knownSongs[s.id] = s;
@@ -125,15 +126,18 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
 
     // Audio service listeners
     _audioService.onPositionChanged.listen((duration) {
-      if (_isPlaying && mounted) {
-        final curSong = _getCurrentSong();
-        setState(() {
-          _currentPositionSeconds = duration.inSeconds;
-          if (curSong.durationSeconds > 0) {
-            _progress = (_currentPositionSeconds / curSong.durationSeconds).clamp(0.0, 1.0);
-          }
-        });
-      }
+      if (!_isPlaying || !mounted) return;
+      // audioplayers saniyede birkaç kez haber veriyor; aynı saniye içinde
+      // tekrar çizmeye gerek yok (düşük donanımda hissedilir fark).
+      final seconds = duration.inSeconds;
+      if (seconds == _currentPositionSeconds) return;
+      final curSong = _getCurrentSong();
+      setState(() {
+        _currentPositionSeconds = seconds;
+        if (curSong.durationSeconds > 0) {
+          _progress = (_currentPositionSeconds / curSong.durationSeconds).clamp(0.0, 1.0);
+        }
+      });
     });
 
     _audioService.onPlayerStateChanged.listen((state) {
@@ -147,50 +151,85 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
       }
     });
 
+    // Sunucuyu erkenden yokla (UI beklemez)
+    _apiService.warmUp();
+
     // Pre-fetch Spotify covers for all initial songs on startup
     _prefetchSpotifyCovers();
     _updateSmartColors(_getCurrentSong());
   }
 
-  /// Uygulama açılınca tüm şarkılar için Spotify 640x640 kapak + canvas pre-fetch
+  bool _needsArtwork(Song song) {
+    final needsCanvas = song.canvasUrl == null || song.canvasUrl!.isEmpty;
+    // cover zaten Spotify CDN'den geliyorsa atla (i.scdn.co)
+    final needsCover = song.coverUrl == null ||
+        song.coverUrl!.isEmpty ||
+        !song.coverUrl!.contains('scdn.co');
+    return needsCover || needsCanvas;
+  }
+
+  /// Uygulama açılınca eksik kapak/canvas'ları TEK istekle çözer.
   Future<void> _prefetchSpotifyCovers() async {
     if (WidgetsBinding.instance is! WidgetsFlutterBinding) return;
-    for (final song in Song.initialSongs) {
-      // Canvas URL zaten varsa cover fetch yap, yoksa ikisini birden al
-      final needsCanvas = song.canvasUrl == null || song.canvasUrl!.isEmpty;
-      // cover zaten Spotify CDN'den geliyorsa atla (i.scdn.co)
-      final needsCover = song.coverUrl == null ||
-          song.coverUrl!.isEmpty ||
-          !song.coverUrl!.contains('scdn.co');
 
-      if (!needsCover && !needsCanvas) continue;
+    final pending = Song.initialSongs.where(_needsArtwork).toList();
+    if (pending.isEmpty) return;
 
-      try {
-        final result = await _apiService.fetchSpotifyCanvas(
-          trackId: song.spotifyTrackId,
-          query: (song.spotifyTrackId == null || song.spotifyTrackId!.isEmpty)
-              ? '${song.artist} ${song.title}'
-              : null,
-        );
-        if (!mounted) return;
+    final batch = await _apiService.fetchSpotifyCanvasBatch(pending);
+    if (!mounted) return;
 
-        final updated = _knownSongs[song.id] ?? song;
-        final newSong = updated.copyWith(
-          coverUrl: (needsCover && result.coverUrl != null)
-              ? result.coverUrl
-              : updated.coverUrl,
-          canvasUrl: (needsCanvas && result.canvasUrl != null)
-              ? result.canvasUrl
-              : updated.canvasUrl,
-        );
-
-        setState(() {
-          _knownSongs[song.id] = newSong;
-          final idx = _songs.indexWhere((s) => s.id == song.id);
-          if (idx != -1) _songs[idx] = newSong;
-        });
-      } catch (_) {}
+    if (batch.isNotEmpty) {
+      setState(() {
+        batch.forEach((id, artwork) => _applySongArtwork(id, artwork));
+      });
+      return;
     }
+
+    // Toplu istek başarısız olduysa tek tek 8 şarkı denemek yerine
+    // yalnızca ilk 2'siyle sunucunun ayakta olup olmadığını yokla.
+    for (final song in pending.take(2)) {
+      await _prefetchArtworkFor(song);
+      if (!mounted) return;
+    }
+  }
+
+  Future<void> _prefetchArtworkFor(Song song) async {
+    final needsCanvas = song.canvasUrl == null || song.canvasUrl!.isEmpty;
+    final needsCover = song.coverUrl == null ||
+        song.coverUrl!.isEmpty ||
+        !song.coverUrl!.contains('scdn.co');
+    if (!needsCover && !needsCanvas) return;
+
+    try {
+      final result = await _apiService.fetchSpotifyCanvas(
+        trackId: song.spotifyTrackId,
+        query: (song.spotifyTrackId == null || song.spotifyTrackId!.isEmpty)
+            ? '${song.artist} ${song.title}'
+            : null,
+      );
+      if (!mounted) return;
+      setState(() {
+        _applySongArtwork(
+          song.id,
+          (
+            canvasUrl: result.canvasUrl,
+            coverUrl: result.coverUrl,
+          ),
+        );
+      });
+    } catch (_) {}
+  }
+
+  void _applySongArtwork(String id, SongArtwork artwork) {
+    final base = _knownSongs[id];
+    if (base == null) return;
+    final updated = base.copyWith(
+      canvasUrl: artwork.canvasUrl,
+      coverUrl: artwork.coverUrl,
+    );
+    _knownSongs[id] = updated;
+    final idx = _songs.indexWhere((song) => song.id == id);
+    if (idx != -1) _songs[idx] = updated;
   }
 
   void _onSearchChanged() {
@@ -225,23 +264,29 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
       _isSearching = false;
     });
 
-    // Pre-fetch high-res Spotify covers & canvas for top search results in parallel
-    for (int i = 0; i < math.min(results.length, 6); i++) {
-      final s = results[i];
+    // İlk 6 sonuç için kapak + canvas: tek istek, sonra tekil yedek
+    final topResults = results.take(6).toList();
+    final batch = await _apiService.fetchSpotifyCanvasBatch(topResults);
+    if (!mounted) return;
+
+    if (batch.isNotEmpty) {
+      setState(() {
+        batch.forEach((id, artwork) => _applySongArtwork(id, artwork));
+      });
+      return;
+    }
+
+    for (final s in topResults) {
       _apiService.fetchSpotifyCanvas(
         query: '${s.artist} ${s.title}',
       ).then((res) {
         if (!mounted) return;
         if (res.coverUrl != null || res.canvasUrl != null) {
-          final cur = _knownSongs[s.id] ?? s;
-          final updated = cur.copyWith(
-            coverUrl: res.coverUrl ?? cur.coverUrl,
-            canvasUrl: res.canvasUrl ?? cur.canvasUrl,
-          );
           setState(() {
-            _knownSongs[s.id] = updated;
-            final idx = _songs.indexWhere((item) => item.id == s.id);
-            if (idx != -1) _songs[idx] = updated;
+            _applySongArtwork(
+              s.id,
+              (canvasUrl: res.canvasUrl, coverUrl: res.coverUrl),
+            );
           });
         }
       });
@@ -259,8 +304,10 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
   @override
   void dispose() {
     _spinController.dispose();
+    _pageController.dispose();
     _playbackTimer?.cancel();
     _toastTimer?.cancel();
+    _playerHideTimer?.cancel();
     _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
@@ -429,23 +476,77 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
   }
 
   void _openNowPlaying() {
+    _playerHideTimer?.cancel();
+
+    if (!_playerLayerVisible) {
+      // Önce ekran dışında kur, sonraki karede yukarı kaydır.
+      setState(() {
+        _playerLayerVisible = true;
+        _isPlayerOpen = false;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {
+          _isPlayerOpen = true;
+        });
+      });
+      return;
+    }
+
     setState(() {
       _isPlayerOpen = true;
     });
   }
 
   void _closeNowPlaying() {
+    if (!_isPlayerOpen) return;
     setState(() {
       _isPlayerOpen = false;
+    });
+    // Kapanış animasyonu bitince ağır Now Playing ağacını (ve canvas
+    // videosunu) tamamen kaldır.
+    _playerHideTimer?.cancel();
+    _playerHideTimer = Timer(const Duration(milliseconds: 420), () {
+      if (mounted && !_isPlayerOpen) {
+        setState(() {
+          _playerLayerVisible = false;
+        });
+      }
     });
   }
 
-  void _openLibraryFromPlayer() {
+  void _selectTab(AppTab tab, {bool animate = true}) {
+    final index = _tabs.indexOf(tab);
+    if (index == -1) return;
+
+    final changed = _currentTab != tab;
     setState(() {
-      _isPlayerOpen = false;
-      _currentTab = AppTab.library;
+      _currentTab = tab;
       _scrollRatio = 0.0;
     });
+
+    if (_pageController.hasClients) {
+      if (animate) {
+        _pageController.animateToPage(
+          index,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic,
+        );
+      } else if ((_pageController.page ?? 0).round() != index) {
+        _pageController.jumpToPage(index);
+      }
+    }
+
+    if (changed) FocusScope.of(context).unfocus();
+  }
+
+  void _openLibraryFromPlayer() {
+    _playerHideTimer?.cancel();
+    setState(() {
+      _isPlayerOpen = false;
+      _playerLayerVisible = false;
+    });
+    _selectTab(AppTab.library);
     _showToast('Kütüphane açıldı');
   }
 
@@ -485,14 +586,16 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
       _apiService.downloadSong(songToDownload).then((result) {
         if (!mounted) return;
         setState(() => _downloadingSongIds.remove(songId));
-        if (result.ok && result.localPath != null) {
+        if (result.ok) {
           setState(() {
             _downloadedSongIds.add(songId);
-            final updated = (_knownSongs[songId] ?? song)
-                .copyWith(audioUrl: result.localPath);
-            _knownSongs[songId] = updated;
-            final idx = _songs.indexWhere((s) => s.id == songId);
-            if (idx != -1) _songs[idx] = updated;
+            if (result.localPath != null) {
+              final updated = (_knownSongs[songId] ?? song)
+                  .copyWith(audioUrl: result.localPath);
+              _knownSongs[songId] = updated;
+              final idx = _songs.indexWhere((s) => s.id == songId);
+              if (idx != -1) _songs[idx] = updated;
+            }
           });
           _showToast('✓ İndirildi');
         } else {
@@ -523,20 +626,24 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
     );
   }
 
-  List<Song> _getFilteredSongs() {
-    switch (_currentTab) {
+  List<Song> _songsForTab(AppTab tab) {
+    switch (tab) {
       case AppTab.discover:
         return _songs;
 
       case AppTab.library:
         return _downloadedSongIds
-            .map((id) => _knownSongs[id] ?? _songs.firstWhere((s) => s.id == id, orElse: () => Song.initialSongs.first))
+            .map((id) => _knownSongs[id] ??
+                _songs.firstWhere((s) => s.id == id,
+                    orElse: () => Song.initialSongs.first))
             .toSet()
             .toList();
 
       case AppTab.liked:
         return _likedSongIds
-            .map((id) => _knownSongs[id] ?? _songs.firstWhere((s) => s.id == id, orElse: () => Song.initialSongs.first))
+            .map((id) => _knownSongs[id] ??
+                _songs.firstWhere((s) => s.id == id,
+                    orElse: () => Song.initialSongs.first))
             .toSet()
             .toList();
     }
@@ -564,8 +671,8 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
     }
   }
 
-  String _getEmptyText() {
-    switch (_currentTab) {
+  String _emptyTextFor(AppTab tab) {
+    switch (tab) {
       case AppTab.discover:
         return 'Sonuç bulunamadı. Başka bir şarkı veya sanatçı dene.';
       case AppTab.library:
@@ -577,38 +684,29 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    final currentSong = _getCurrentSong();
-    final filteredSongs = _getFilteredSongs();
-
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
         bottom: false,
-        child: _buildPhoneContent(
-          currentSong: currentSong,
-          filteredSongs: filteredSongs,
-        ),
+        child: _buildPhoneContent(currentSong: _getCurrentSong()),
       ),
     );
   }
 
-  Widget _buildPhoneContent({
-    required Song currentSong,
-    required List<Song> filteredSongs,
-  }) {
-    final headerSpacerHeight = _currentTab == AppTab.discover ? 170.0 : 104.0;
-
+  Widget _buildPhoneContent({required Song currentSong}) {
     final currentIndex = _songs.indexWhere((s) => s.id == _currentSongId);
     final nextSong = _songs.isNotEmpty
         ? _songs[(currentIndex + 1) % _songs.length]
         : currentSong;
+    final currentSongs = _songsForTab(_currentTab);
 
     return Stack(
       children: [
-        // 1. Main Scrollable List
+        // 1. Sayfalar — sağa/sola kaydırarak Keşfet ↔ Kütüphane ↔ Beğenilen
         Positioned.fill(
           child: NotificationListener<ScrollNotification>(
             onNotification: (notification) {
+              if (notification.metrics.axis != Axis.vertical) return false;
               if (notification is ScrollUpdateNotification ||
                   notification is OverscrollNotification) {
                 final pixels = notification.metrics.pixels;
@@ -621,64 +719,39 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
               }
               return false;
             },
-            child: CustomScrollView(
-              key: ValueKey('scroll_${_currentTab.name}'),
-              physics: const BouncingScrollPhysics(),
-              slivers: [
-                SliverToBoxAdapter(
-                  child: SizedBox(height: headerSpacerHeight),
-                ),
-
-                if (filteredSongs.isEmpty)
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 60),
-                        child: Text(
-                          _getEmptyText(),
-                          style: const TextStyle(
-                            color: AppColors.textMuted,
-                            fontSize: 15,
-                            height: 1.5,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
+            child: PageView(
+              controller: _pageController,
+              physics: const PageScrollPhysics(),
+              onPageChanged: (index) {
+                final tab = _tabs[index];
+                if (tab == _currentTab) return;
+                setState(() {
+                  _currentTab = tab;
+                  _scrollRatio = 0.0;
+                });
+                FocusScope.of(context).unfocus();
+              },
+              children: _tabs
+                  .map(
+                    (tab) => _TabPage(
+                      tab: tab,
+                      songs: _songsForTab(tab),
+                      currentSongId: _currentSongId,
+                      likedIds: _likedSongIds,
+                      downloadedIds: _downloadedSongIds,
+                      downloadingIds: _downloadingSongIds,
+                      headerSpacerHeight:
+                          tab == AppTab.discover ? 170.0 : 104.0,
+                      emptyText: _emptyTextFor(tab),
+                      onPlay: (song) {
+                        _playSong(song);
+                      },
+                      onToggleLike: _toggleLike,
+                      onToggleDownload: _toggleDownload,
+                      onOpenMenu: _openSongMenu,
                     ),
                   )
-                else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 180),
-                    sliver: SliverList(
-                      delegate: SliverChildBuilderDelegate(
-                        (context, index) {
-                          final song = filteredSongs[index];
-                          final isCur = song.id == _currentSongId;
-                          final isLiked = _likedSongIds.contains(song.id);
-                          final isDownloaded = _downloadedSongIds.contains(song.id);
-                          final isDownloading = _downloadingSongIds.contains(song.id);
-
-                          return SongRow(
-                            key: ValueKey('${song.id}_${_currentTab.name}'),
-                            song: song,
-                            isCurrent: isCur,
-                            isLiked: isLiked,
-                            isDownloaded: isDownloaded,
-                            isDownloading: isDownloading,
-                            isLibraryTab: _currentTab == AppTab.library,
-                            onPlay: () => _playSong(song),
-                            onToggleLike: () => _toggleLike(song.id),
-                            onToggleDownload: () => _toggleDownload(song.id),
-                            onOpenMenu: () => _openSongMenu(song),
-                          );
-                        },
-                        childCount: filteredSongs.length,
-                      ),
-                    ),
-                  ),
-              ],
+                  .toList(),
             ),
           ),
         ),
@@ -719,7 +792,7 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
             children: [
               Container(
                 color: AppColors.background,
-                child: _buildHeaderContent(filteredSongs.length),
+                child: _buildHeaderContent(currentSongs.length),
               ),
 
               // Siyah Yumuşak Gölge (Kaydırdıkça belirginleşen dinamik gölge efekti)
@@ -752,21 +825,21 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
             right: 0,
             bottom: 96,
             child: MiniPlayer(
-            currentSong: currentSong,
-            isPlaying: _isPlaying,
-            progress: _progress,
-            spinController: _spinController,
-            onTogglePlay: _togglePlay,
-            onTap: _openNowPlaying,
-            smartBgColor: _smartPlayerColor,
-            onSeekRatio: (ratio) {
-              final dur = currentSong.durationSeconds;
-              if (dur > 0) {
-                _seekTo(ratio * dur);
-              }
-            },
+              currentSong: currentSong,
+              isPlaying: _isPlaying,
+              progress: _progress,
+              spinController: _spinController,
+              onTogglePlay: _togglePlay,
+              onTap: _openNowPlaying,
+              smartBgColor: _smartPlayerColor,
+              onSeekRatio: (ratio) {
+                final dur = currentSong.durationSeconds;
+                if (dur > 0) {
+                  _seekTo(ratio * dur);
+                }
+              },
+            ),
           ),
-        ),
 
         // 5. Bottom Navigation Bar
         Positioned(
@@ -775,57 +848,56 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
           bottom: 0,
           child: MusicBottomNavBar(
             currentTab: _currentTab,
-            onTabSelected: (tab) {
-              setState(() {
-                _currentTab = tab;
-                _scrollRatio = 0.0;
-              });
-            },
+            onTabSelected: _selectTab,
             smartBgColor: _smartDarkNavColor,
           ),
         ),
 
         // 6. Full Screen Now Playing Player
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 380),
-          curve: const Cubic(0.2, 0.8, 0.2, 1),
-          top: _isPlayerOpen ? 0 : MediaQuery.of(context).size.height,
-          left: 0,
-          right: 0,
-          bottom: _isPlayerOpen ? 0 : -MediaQuery.of(context).size.height,
-          child: NowPlayingScreen(
-            song: currentSong,
-            nextSong: nextSong,
-            contextTitle: _getTitle(),
-            isPlaying: _isPlaying,
-            currentPositionSeconds: _currentPositionSeconds,
-            isLiked: _likedSongIds.contains(currentSong.id),
-            isShuffle: _isShuffle,
-            isRepeat: _isRepeat,
-            spinController: _spinController,
-            onClose: _closeNowPlaying,
-            onTogglePlay: _togglePlay,
-            onPrevious: _previousSong,
-            onNext: _nextSong,
-            onToggleLike: () => _toggleLike(currentSong.id),
-            onToggleShuffle: () {
-              setState(() {
-                _isShuffle = !_isShuffle;
-                _showToast(_isShuffle ? 'Karıştırma açık' : 'Karıştırma kapalı');
-              });
-            },
-            onToggleRepeat: () {
-              setState(() {
-                _isRepeat = !_isRepeat;
-                _showToast(_isRepeat ? 'Tekrar açık' : 'Tekrar kapalı');
-              });
-            },
-            onSeek: _seekTo,
-            onPlayNext: () => _playSong(nextSong),
-            onOpenMenu: () => _openSongMenu(currentSong),
-            onOpenLibrary: _openLibraryFromPlayer,
+        // Yalnızca açıkken ağaçta tutulur → kapalıyken canvas videosu
+        // ve ağır kapak/palette widget'ları CPU harcamaz.
+        if (_playerLayerVisible)
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 380),
+            curve: const Cubic(0.2, 0.8, 0.2, 1),
+            top: _isPlayerOpen ? 0 : MediaQuery.of(context).size.height,
+            left: 0,
+            right: 0,
+            bottom: _isPlayerOpen ? 0 : -MediaQuery.of(context).size.height,
+            child: NowPlayingScreen(
+              song: currentSong,
+              nextSong: nextSong,
+              contextTitle: _getTitle(),
+              isPlaying: _isPlaying,
+              isActive: _isPlayerOpen,
+              currentPositionSeconds: _currentPositionSeconds,
+              isLiked: _likedSongIds.contains(currentSong.id),
+              isShuffle: _isShuffle,
+              isRepeat: _isRepeat,
+              spinController: _spinController,
+              onClose: _closeNowPlaying,
+              onTogglePlay: _togglePlay,
+              onPrevious: _previousSong,
+              onNext: _nextSong,
+              onToggleLike: () => _toggleLike(currentSong.id),
+              onToggleShuffle: () {
+                setState(() {
+                  _isShuffle = !_isShuffle;
+                  _showToast(_isShuffle ? 'Karıştırma açık' : 'Karıştırma kapalı');
+                });
+              },
+              onToggleRepeat: () {
+                setState(() {
+                  _isRepeat = !_isRepeat;
+                  _showToast(_isRepeat ? 'Tekrar açık' : 'Tekrar kapalı');
+                });
+              },
+              onSeek: _seekTo,
+              onPlayNext: () => _playSong(nextSong),
+              onOpenMenu: () => _openSongMenu(currentSong),
+              onOpenLibrary: _openLibraryFromPlayer,
+            ),
           ),
-        ),
 
         // 7. Toast Message
         if (_toastMessage.isNotEmpty)
@@ -942,6 +1014,107 @@ class _MusicHomeScreenState extends State<MusicHomeScreen>
           ],
         ],
       ),
+    );
+  }
+}
+
+
+class _TabPage extends StatefulWidget {
+  final AppTab tab;
+  final List<Song> songs;
+  final String currentSongId;
+  final Set<String> likedIds;
+  final Set<String> downloadedIds;
+  final Set<String> downloadingIds;
+  final double headerSpacerHeight;
+  final String emptyText;
+  final ValueChanged<Song> onPlay;
+  final ValueChanged<String> onToggleLike;
+  final ValueChanged<String> onToggleDownload;
+  final ValueChanged<Song> onOpenMenu;
+
+  const _TabPage({
+    required this.tab,
+    required this.songs,
+    required this.currentSongId,
+    required this.likedIds,
+    required this.downloadedIds,
+    required this.downloadingIds,
+    required this.headerSpacerHeight,
+    required this.emptyText,
+    required this.onPlay,
+    required this.onToggleLike,
+    required this.onToggleDownload,
+    required this.onOpenMenu,
+  });
+
+  @override
+  State<_TabPage> createState() => _TabPageState();
+}
+
+class _TabPageState extends State<_TabPage>
+    with AutomaticKeepAliveClientMixin {
+  // Sayfa değiştirilip geri dönüldüğünde scroll konumu korunur.
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+
+    return CustomScrollView(
+      key: PageStorageKey<String>('scroll_${widget.tab.name}'),
+      physics: const BouncingScrollPhysics(),
+      slivers: [
+        SliverToBoxAdapter(
+          child: SizedBox(height: widget.headerSpacerHeight),
+        ),
+        if (widget.songs.isEmpty)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 60),
+                child: Text(
+                  widget.emptyText,
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 15,
+                    height: 1.5,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 180),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  final song = widget.songs[index];
+                  return SongRow(
+                    key: ValueKey('${song.id}_${widget.tab.name}'),
+                    song: song,
+                    isCurrent: song.id == widget.currentSongId,
+                    isLiked: widget.likedIds.contains(song.id),
+                    isDownloaded: widget.downloadedIds.contains(song.id),
+                    isDownloading: widget.downloadingIds.contains(song.id),
+                    isLibraryTab: widget.tab == AppTab.library,
+                    onPlay: () => widget.onPlay(song),
+                    onToggleLike: () => widget.onToggleLike(song.id),
+                    onToggleDownload: () => widget.onToggleDownload(song.id),
+                    onOpenMenu: () => widget.onOpenMenu(song),
+                  );
+                },
+                childCount: widget.songs.length,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
