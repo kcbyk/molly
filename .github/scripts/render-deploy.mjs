@@ -146,7 +146,7 @@ async function main() {
   if (vars.length) {
     await api(`/services/${service.id}/env-vars`, {
       method: 'PUT',
-      body: JSON.stringify({ envVars: vars }),
+      body: JSON.stringify(vars),
     });
     console.log(`✓ ${vars.length} ortam değişkeni yazıldı: ${vars.map((v) => v.key).join(', ')}`);
   } else {
