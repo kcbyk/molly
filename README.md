@@ -78,7 +78,7 @@ flutter build web && cd server && npm start
 
 Depo içinde hazır iki yol var:
 
-**A) GitHub Actions (önerilen)** — `ci/` klasöründeki iki dosyayı
+**A) GitHub Actions (önerilen)** — `ci/` klasöründeki dosyaları
 `.github/workflows/` altına taşı, sırları ekle (bkz. `ci/README.md`), sonra
 Actions → **APK Üret** → Run workflow. `molly-apk` artifact'ından
 `Molly-1.0.0-arm64-v8a.apk` indir.
