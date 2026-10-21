@@ -53,7 +53,7 @@ class _NativeCanvasVideoState extends State<_NativeCanvasVideo> {
     final loadId = ++_loadId;
     final controller = VideoPlayerController.networkUrl(
       Uri.parse(widget.videoUrl),
-      videoPlayerOptions: const VideoPlayerOptions(mixWithOthers: true),
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
     );
 
     try {
