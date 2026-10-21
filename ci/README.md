@@ -4,14 +4,15 @@ Bu klasördeki iki dosya **GitHub Actions** iş akışıdır. Buradan çalışma
 `.github/workflows/` altına taşınmaları gerekir. (Ajanın GitHub bağlantısı
 `workflows` yetkisine sahip olmadığı için doğrudan oraya konulamadı.)
 
-## Kurulum (tek seferlik, ~2 dakika)
+## Kurulum (tek seferlik)
 
-1. GitHub'da depoyu aç → **Add file → Upload files**.
-2. Bu klasördeki `build-apk.yml` ve `deploy-render.yml` dosyalarını sürükle.
-3. Dosya yolunu **`.github/workflows/`** olarak yaz (GitHub yolu korur, gerekirse
-   sürüklerken klasör oluştur). Commit'le.
-   - Alternatif: her dosya için **Add file → Create new file** → başlığa
-     `.github/workflows/build-apk.yml` yaz → içeriği yapıştır.
+1. **https://github.com/kcbyk/molly/new/main?filename=.github/workflows/build-apk.yml**
+   → bu klasördeki `build-apk.yml` içeriğini yapıştır → commit.
+2. Aynısı `deploy-render.yml` için (opsiyonel):
+
+   **https://github.com/kcbyk/molly/new/main?filename=.github/workflows/deploy-render.yml**
+
+Ayrıntılı adımlar: depo kökündeki `DEPLOY.md`.
 
 ## Sırlar (Settings → Secrets and variables → Actions)
 
